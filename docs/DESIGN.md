@@ -37,8 +37,8 @@ tenant *and* the intended audience — but it is never the role authority:
 ├── internal/
 │   ├── config/config.go       # env-based config (DB URL, API key, model, caps)
 │   ├── db/
-│   │   ├── pool.go            # pgx pool
-│   │   └── migrate.go         # applies migrations/ at startup
+│   │   ├── db.go              # pgx pool + migration runner
+│   │   └── migrations/        # embedded SQL, applied at startup
 │   ├── store/                 # ALL SQL lives here; every function's first
 │   │   │                      # args are (ctx, companyID) — tenancy by construction
 │   │   ├── users.go products.go services.go orders.go rules.go
@@ -46,9 +46,9 @@ tenant *and* the intended audience — but it is never the role authority:
 │   │   ├── pending.go         # pending_writes lifecycle
 │   │   ├── audit.go dedup.go escalations.go
 │   ├── llm/
-│   │   ├── client.go          # LLMClient interface + neutral message/tool types
-│   │   ├── anthropic.go       # Messages API impl
-│   │   └── retry.go           # ≤3 attempts, exp backoff on timeout/429/5xx
+│   │   ├── client.go          # llm.Client interface + neutral message/tool types
+│   │   └── anthropic.go       # official SDK impl; retries (≤3 attempts,
+│   │                          # exp backoff on timeout/429/5xx) via SDK config
 │   ├── harness/
 │   │   ├── harness.go         # the tool loop (≤6 iterations → auto-escalate)
 │   │   ├── identity.go        # sender phone + receiving channel → (company, role)
@@ -62,7 +62,6 @@ tenant *and* the intended audience — but it is never the role authority:
 │   └── wa/
 │       ├── manager.go         # SessionManager keyed by (company_id, channel)
 │       └── handler.go         # inbound events → dedup → worker dispatch
-├── migrations/0001_init.sql
 ├── scripts/
 │   ├── start.sh               # wakelock + supervise loop
 │   └── termux-boot.sh         # → ~/.termux/boot/
@@ -95,7 +94,7 @@ WhatsMeow event
 
 ## Schema
 
-See `migrations/0001_init.sql`. Summary:
+See `internal/db/migrations/0001_init.sql`. Summary:
 
 | table | purpose | notes |
 |---|---|---|
