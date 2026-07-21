@@ -44,7 +44,7 @@ func NewOpenRouterClient(apiKey, model string, maxAttempts int, siteURL, appName
 		siteURL:     siteURL,
 		appName:     appName,
 		baseURL:     openRouterChatCompletionsURL,
-		httpClient:  http.DefaultClient,
+		httpClient:  &http.Client{Timeout: 2 * time.Minute},
 		backoff:     openRouterBackoff,
 	}
 }
@@ -87,7 +87,7 @@ func (c *OpenRouterClient) Complete(ctx context.Context, req *Request) (*Respons
 			httpReq.Header.Set("HTTP-Referer", c.siteURL)
 		}
 		if c.appName != "" {
-			httpReq.Header.Set("X-Title", c.appName)
+			httpReq.Header.Set("X-OpenRouter-Title", c.appName)
 		}
 
 		httpResp, err := client.Do(httpReq)
@@ -132,6 +132,12 @@ func (c *OpenRouterClient) Complete(ctx context.Context, req *Request) (*Respons
 		}
 		if tooLarge {
 			return nil, fmt.Errorf("openrouter: response body exceeds %d bytes", maxOpenRouterResponseBody)
+		}
+		if status := openRouterEmbeddedErrorStatus(responseBody); isOpenRouterRetryableStatus(status) && attempt < attempts {
+			if err := c.waitForRetry(ctx, attempt, httpResp.Header.Get("Retry-After")); err != nil {
+				return nil, err
+			}
+			continue
 		}
 
 		return c.decodeResponse(responseBody)
@@ -300,6 +306,7 @@ type openRouterChoice struct {
 
 type openRouterResponseMessage struct {
 	Content          *string                      `json:"content"`
+	Refusal          string                       `json:"refusal"`
 	ToolCalls        []openRouterResponseToolCall `json:"tool_calls"`
 	ReasoningDetails json.RawMessage              `json:"reasoning_details"`
 }
@@ -360,6 +367,8 @@ func (c *OpenRouterClient) decodeResponse(body []byte) (*Response, error) {
 
 	if len(choice.Message.ToolCalls) > 0 {
 		response.StopReason = "tool_use"
+	} else if choice.Message.Refusal != "" {
+		response.StopReason = "refusal"
 	} else {
 		response.StopReason = normalizeOpenRouterStopReason(choice.FinishReason)
 	}
@@ -405,6 +414,35 @@ func normalizeOpenRouterStopReason(reason string) string {
 
 func isOpenRouterRetryableStatus(status int) bool {
 	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
+}
+
+func openRouterEmbeddedErrorStatus(body []byte) int {
+	var response openRouterResponse
+	if json.Unmarshal(body, &response) != nil {
+		return 0
+	}
+	raw := response.Error
+	if !hasOpenRouterJSONValue(raw) && len(response.Choices) > 0 {
+		raw = response.Choices[0].Error
+	}
+	if !hasOpenRouterJSONValue(raw) {
+		return 0
+	}
+	var object struct {
+		Code json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(raw, &object) != nil {
+		return 0
+	}
+	var numeric int
+	if json.Unmarshal(object.Code, &numeric) == nil {
+		return numeric
+	}
+	var text string
+	if json.Unmarshal(object.Code, &text) == nil {
+		numeric, _ = strconv.Atoi(text)
+	}
+	return numeric
 }
 
 func (c *OpenRouterClient) waitForRetry(ctx context.Context, attempt int, retryAfter string) error {

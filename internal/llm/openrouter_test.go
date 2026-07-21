@@ -32,8 +32,8 @@ func TestOpenRouterCompleteText(t *testing.T) {
 		if got := r.Header.Get("HTTP-Referer"); got != "https://example.test" {
 			t.Errorf("HTTP-Referer = %q", got)
 		}
-		if got := r.Header.Get("X-Title"); got != "Harness" {
-			t.Errorf("X-Title = %q", got)
+		if got := r.Header.Get("X-OpenRouter-Title"); got != "Harness" {
+			t.Errorf("X-OpenRouter-Title = %q", got)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Errorf("decode request: %v", err)
@@ -332,6 +332,31 @@ func TestOpenRouterRetryWaitIsCancelable(t *testing.T) {
 	}
 }
 
+func TestOpenRouterRetriesEmbeddedServerError(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"error":{"message":"provider failed","code":503}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenRouterClient("key", "model", 2, "", "")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+	client.backoff = func(int) time.Duration { return 0 }
+
+	response, err := client.Complete(context.Background(), &Request{MaxTokens: 10})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts.Load() != 2 || response.Text() != "ok" {
+		t.Fatalf("attempts=%d response=%#v", attempts.Load(), response)
+	}
+}
+
 func TestOpenRouterTreatsErrorsInSuccessfulHTTPResponse(t *testing.T) {
 	tests := []struct {
 		name string
@@ -348,7 +373,7 @@ func TestOpenRouterTreatsErrorsInSuccessfulHTTPResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewOpenRouterClient("key", "model", 3, "", "")
+			client := NewOpenRouterClient("key", "model", 1, "", "")
 			client.baseURL = server.URL
 			client.httpClient = server.Client()
 			_, err := client.Complete(context.Background(), &Request{MaxTokens: 10})
