@@ -13,6 +13,18 @@ import (
 	"github.com/filipekdick/go-harness-whatsmeow/internal/store"
 )
 
+// ReadStore is the tenant-scoped data surface available to read-only tools.
+// Keeping this interface in the consumer package makes handlers testable while
+// *store.Store remains the production implementation.
+type ReadStore interface {
+	SearchCatalog(ctx context.Context, companyID int64, search store.CatalogSearch) ([]store.CatalogItem, error)
+	GetProduct(ctx context.Context, companyID, productID int64) (*store.Product, error)
+	GetProductStock(ctx context.Context, companyID, productID int64) (*store.ProductStock, error)
+	GetOrder(ctx context.Context, companyID, orderID int64) (*store.Order, error)
+	GetOrderForCustomer(ctx context.Context, companyID, orderID, customerID int64) (*store.Order, error)
+	GetBusinessRule(ctx context.Context, companyID int64, key string) (*store.BusinessRule, error)
+}
+
 // Env is everything a tool handler is allowed to know. CompanyID scopes every
 // query; handlers must pass it to every store call.
 type Env struct {
@@ -22,7 +34,7 @@ type Env struct {
 	Channel          store.Channel
 	ConversationID   int64
 	InboundMessageID int64 // watermark for the two-phase write confirmation
-	Store            *store.Store
+	Store            ReadStore
 }
 
 type Handler func(ctx context.Context, env *Env, params map[string]any) (string, error)
@@ -130,8 +142,8 @@ func (r *Registry) Execute(ctx context.Context, env *Env, name string, input jso
 }
 
 // validateParams checks params against a JSON Schema subset: required fields
-// present, no unknown fields, primitive type checks, enum membership, and
-// arrays of strings. Enough to guarantee handlers see well-shaped input
+// present, no unknown fields, primitive type checks, enum membership, numeric
+// bounds, and arrays of strings. Enough to guarantee handlers see well-shaped input
 // before any SQL runs.
 func validateParams(schema map[string]any, params map[string]any) error {
 	props, _ := schema["properties"].(map[string]any)
@@ -184,13 +196,20 @@ func checkType(name string, prop map[string]any, value any) error {
 			return fmt.Errorf("parameter %q must be one of %v", name, enum)
 		}
 	case "number":
-		if _, ok := value.(float64); !ok {
+		f, ok := value.(float64)
+		if !ok {
 			return fmt.Errorf("parameter %q must be a number", name)
+		}
+		if err := checkNumericBounds(name, prop, f); err != nil {
+			return err
 		}
 	case "integer":
 		f, ok := value.(float64)
 		if !ok || f != float64(int64(f)) {
 			return fmt.Errorf("parameter %q must be an integer", name)
+		}
+		if err := checkNumericBounds(name, prop, f); err != nil {
+			return err
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
@@ -217,4 +236,31 @@ func checkType(name string, prop map[string]any, value any) error {
 		return fmt.Errorf("parameter %q has unsupported schema type %q", name, typ)
 	}
 	return nil
+}
+
+func checkNumericBounds(name string, prop map[string]any, value float64) error {
+	if minimum, ok := schemaNumber(prop["minimum"]); ok && value < minimum {
+		return fmt.Errorf("parameter %q must be at least %v", name, minimum)
+	}
+	if maximum, ok := schemaNumber(prop["maximum"]); ok && value > maximum {
+		return fmt.Errorf("parameter %q must be at most %v", name, maximum)
+	}
+	return nil
+}
+
+func schemaNumber(value any) (float64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return number, true
+	case float32:
+		return float64(number), true
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	case int32:
+		return float64(number), true
+	default:
+		return 0, false
+	}
 }
