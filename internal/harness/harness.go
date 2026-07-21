@@ -213,7 +213,8 @@ func (h *Harness) runToolLoop(ctx context.Context, log *slog.Logger, env *tools.
 			out, isErr := h.tools.Execute(ctx, env, call.Name, call.Input)
 			log.Info("tool executed", "tool", call.Name, "is_error", isErr, "iteration", i)
 			results = append(results, llm.ContentBlock{
-				Type: "tool_result", ToolUseID: call.ID, Content: out, IsError: isErr,
+				Type: "tool_result", ToolUseID: call.ID, ToolName: call.Name,
+				Content: out, IsError: isErr,
 			})
 		}
 		if _, err := h.store.AppendMessage(ctx, env.CompanyID, conv.ID, "tool_result", results, nil); err != nil {

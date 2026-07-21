@@ -28,8 +28,13 @@ type ContentBlock struct {
 
 	// tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"`
+	ToolName  string `json:"tool_name,omitempty"`
 	Content   string `json:"content,omitempty"`
 	IsError   bool   `json:"is_error,omitempty"`
+
+	// Opaque provider metadata that must be replayed unchanged between a tool
+	// call and its result (for example OpenRouter reasoning_details).
+	ProviderMetadata json.RawMessage `json:"provider_metadata,omitempty"`
 }
 
 func TextBlock(s string) ContentBlock { return ContentBlock{Type: "text", Text: s} }
